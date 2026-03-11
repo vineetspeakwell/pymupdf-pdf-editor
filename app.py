@@ -3,154 +3,235 @@ from flask_cors import CORS
 import fitz  # PyMuPDF
 import base64
 import io
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/health', methods=['GET'])
+
+def success_pdf_response(doc):
+    output = io.BytesIO()
+    doc.save(output, garbage=4, deflate=True)
+    doc.close()
+    output.seek(0)
+    result_base64 = base64.b64encode(output.read()).decode("utf-8")
+    return jsonify({"pdf_base64": result_base64})
+
+
+def error_response(message, status=400):
+    return jsonify({"error": message}), status
+
+
+@app.route("/health", methods=["GET"])
 def health():
-return jsonify({"status": "ok"})
+    return jsonify({"status": "ok"})
 
-@app.route('/find-replace', methods=['POST'])
+
+@app.route("/find-replace", methods=["POST"])
 def find_replace():
-data = request.json
-pdf_base64 = data.get('pdf_base64')
-replacements = data.get('replacements', [])
+    try:
+        data = request.get_json(force=True)
+        pdf_base64 = data.get("pdf_base64")
+        replacements = data.get("replacements", [])
 
-# Decode PDF
-pdf_bytes = base64.b64decode(pdf_base64)
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if not pdf_base64:
+            return error_response("pdf_base64 is required")
 
-# Perform replacements
-for page in doc:
-    for replacement in replacements:
-        old_text = replacement.get('old_text')
-        new_text = replacement.get('new_text')
-        if old_text and new_text:
-            page.replace_text(old_text, new_text)
+        pdf_bytes = base64.b64decode(pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-# Save and return
-output = io.BytesIO()
-doc.save(output)
-doc.close()
-output.seek(0)
+        for page in doc:
+            for replacement in replacements:
+                old_text = replacement.get("old_text")
+                new_text = replacement.get("new_text")
 
-result_base64 = base64.b64encode(output.read()).decode('utf-8')
-return jsonify({"pdf_base64": result_base64})
+                if not old_text or new_text is None:
+                    continue
 
-@app.route('/replace-image', methods=['POST'])
+                text_instances = page.search_for(old_text)
+
+                for rect in text_instances:
+                    # Cover old text with white redaction area
+                    page.add_redact_annot(rect, fill=(1, 1, 1))
+
+                if text_instances:
+                    page.apply_redactions()
+
+                    # Reinsert replacement text into same area
+                    for rect in text_instances:
+                        page.insert_textbox(
+                            rect,
+                            new_text,
+                            fontsize=12,
+                            color=(0, 0, 0),
+                            align=0
+                        )
+
+        return success_pdf_response(doc)
+
+    except Exception as e:
+        return error_response(f"find-replace failed: {str(e)}", 500)
+
+
+@app.route("/replace-image", methods=["POST"])
 def replace_image():
-data = request.json
-pdf_base64 = data.get('pdf_base64')
-page_num = data.get('page_num', 0)
-image_base64 = data.get('image_base64')
-x = data.get('x', 0)
-y = data.get('y', 0)
-width = data.get('width', 100)
-height = data.get('height', 100)
+    try:
+        data = request.get_json(force=True)
+        pdf_base64 = data.get("pdf_base64")
+        page_num = int(data.get("page_num", 0))
+        image_base64 = data.get("image_base64")
+        x = float(data.get("x", 0))
+        y = float(data.get("y", 0))
+        width = float(data.get("width", 100))
+        height = float(data.get("height", 100))
 
-# Decode PDF and image
-pdf_bytes = base64.b64decode(pdf_base64)
-image_bytes = base64.b64decode(image_base64)
+        if not pdf_base64:
+            return error_response("pdf_base64 is required")
+        if not image_base64:
+            return error_response("image_base64 is required")
 
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-page = doc[page_num]
+        pdf_bytes = base64.b64decode(pdf_base64)
+        image_bytes = base64.b64decode(image_base64)
 
-# Insert image
-rect = fitz.Rect(x, y, x + width, y + height)
-page.insert_image(rect, stream=image_bytes)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-# Save and return
-output = io.BytesIO()
-doc.save(output)
-doc.close()
-output.seek(0)
+        if page_num < 0 or page_num >= len(doc):
+            doc.close()
+            return error_response("Invalid page_num")
 
-result_base64 = base64.b64encode(output.read()).decode('utf-8')
-return jsonify({"pdf_base64": result_base64})
+        page = doc[page_num]
+        rect = fitz.Rect(x, y, x + width, y + height)
+        page.insert_image(rect, stream=image_bytes)
 
-@app.route('/add-annotation', methods=['POST'])
+        return success_pdf_response(doc)
+
+    except Exception as e:
+        return error_response(f"replace-image failed: {str(e)}", 500)
+
+
+@app.route("/add-annotation", methods=["POST"])
 def add_annotation():
-data = request.json
-pdf_base64 = data.get('pdf_base64')
-page_num = data.get('page_num', 0)
-annotation_type = data.get('type', 'text')
-content = data.get('content', '')
-x = data.get('x', 0)
-y = data.get('y', 0)
+    try:
+        data = request.get_json(force=True)
+        pdf_base64 = data.get("pdf_base64")
+        page_num = int(data.get("page_num", 0))
+        annotation_type = data.get("type", "text")
+        content = data.get("content", "")
+        x = float(data.get("x", 0))
+        y = float(data.get("y", 0))
 
-pdf_bytes = base64.b64decode(pdf_base64)
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-page = doc[page_num]
+        if not pdf_base64:
+            return error_response("pdf_base64 is required")
 
-# Add annotation
-if annotation_type == 'text':
-    page.insert_text((x, y), content, fontsize=12, color=(0, 0, 0))
+        pdf_bytes = base64.b64decode(pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-output = io.BytesIO()
-doc.save(output)
-doc.close()
-output.seek(0)
+        if page_num < 0 or page_num >= len(doc):
+            doc.close()
+            return error_response("Invalid page_num")
 
-result_base64 = base64.b64encode(output.read()).decode('utf-8')
-return jsonify({"pdf_base64": result_base64})
+        page = doc[page_num]
 
-@app.route('/add-stamp', methods=['POST'])
+        if annotation_type == "text":
+            page.insert_text(
+                (x, y),
+                content,
+                fontsize=12,
+                color=(0, 0, 0)
+            )
+        else:
+            doc.close()
+            return error_response("Unsupported annotation type")
+
+        return success_pdf_response(doc)
+
+    except Exception as e:
+        return error_response(f"add-annotation failed: {str(e)}", 500)
+
+
+@app.route("/add-stamp", methods=["POST"])
 def add_stamp():
-data = request.json
-pdf_base64 = data.get('pdf_base64')
-page_num = data.get('page_num', 0)
-stamp_text = data.get('stamp_text', 'DRAFT')
-x = data.get('x', 100)
-y = data.get('y', 100)
-color = data.get('color', '#FF0000')
-rotation = data.get('rotation', 0)
+    try:
+        data = request.get_json(force=True)
+        pdf_base64 = data.get("pdf_base64")
+        page_num = int(data.get("page_num", 0))
+        stamp_text = data.get("stamp_text", "DRAFT")
+        x = float(data.get("x", 100))
+        y = float(data.get("y", 100))
+        color = data.get("color", "#FF0000")
+        rotation = int(data.get("rotation", 0))
 
-pdf_bytes = base64.b64decode(pdf_base64)
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-page = doc[page_num]
+        if not pdf_base64:
+            return error_response("pdf_base64 is required")
 
-# Convert hex color to RGB
-color_rgb = tuple(int(color.lstrip('#')[i:i+2], 16) / 255 for i in (0, 2, 4))
+        if rotation not in [0, 90, 180, 270]:
+            return error_response("rotation must be one of: 0, 90, 180, 270")
 
-# Add stamp text
-page.insert_text((x, y), stamp_text, fontsize=48, color=color_rgb, rotate=rotation)
+        pdf_bytes = base64.b64decode(pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-output = io.BytesIO()
-doc.save(output)
-doc.close()
-output.seek(0)
+        if page_num < 0 or page_num >= len(doc):
+            doc.close()
+            return error_response("Invalid page_num")
 
-result_base64 = base64.b64encode(output.read()).decode('utf-8')
-return jsonify({"pdf_base64": result_base64})
+        page = doc[page_num]
 
-@app.route('/add-watermark', methods=['POST'])
+        color_rgb = tuple(
+            int(color.lstrip("#")[i:i+2], 16) / 255.0 for i in (0, 2, 4)
+        )
+
+        page.insert_text(
+            (x, y),
+            stamp_text,
+            fontsize=36,
+            color=color_rgb,
+            rotate=rotation
+        )
+
+        return success_pdf_response(doc)
+
+    except Exception as e:
+        return error_response(f"add-stamp failed: {str(e)}", 500)
+
+
+@app.route("/add-watermark", methods=["POST"])
 def add_watermark():
-data = request.json
-pdf_base64 = data.get('pdf_base64')
-watermark_text = data.get('text', 'CONFIDENTIAL')
-opacity = data.get('opacity', 0.3)
+    try:
+        data = request.get_json(force=True)
+        pdf_base64 = data.get("pdf_base64")
+        watermark_text = data.get("text", "CONFIDENTIAL")
 
-pdf_bytes = base64.b64decode(pdf_base64)
-doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if not pdf_base64:
+            return error_response("pdf_base64 is required")
 
-# Add watermark to all pages
-for page in doc:
-    page_width = page.rect.width
-    page_height = page.rect.height
-    x = page_width / 2
-    y = page_height / 2
-    
-    page.insert_text((x, y), watermark_text, fontsize=72, 
-                    color=(0.5, 0.5, 0.5), rotate=45)
+        pdf_bytes = base64.b64decode(pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-output = io.BytesIO()
-doc.save(output)
-doc.close()
-output.seek(0)
+        for page in doc:
+            rect = page.rect
 
-result_base64 = base64.b64encode(output.read()).decode('utf-8')
-return jsonify({"pdf_base64": result_base64})
+            watermark_box = fitz.Rect(
+                rect.width * 0.15,
+                rect.height * 0.40,
+                rect.width * 0.85,
+                rect.height * 0.60
+            )
 
-if __name__ == '__main__':
-app.run(host='0.0.0.0', port=5000)
+            page.insert_textbox(
+                watermark_box,
+                watermark_text,
+                fontsize=40,
+                color=(0.7, 0.7, 0.7),
+                align=1,
+                rotate=0
+            )
+
+        return success_pdf_response(doc)
+
+    except Exception as e:
+        return error_response(f"add-watermark failed: {str(e)}", 500)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
