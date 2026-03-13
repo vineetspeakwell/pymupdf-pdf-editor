@@ -1391,3 +1391,64 @@ init_db()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+
+@app.route('/password-protect', methods=['POST'])
+def password_protect_pdf():
+try:
+    data = request.json
+    pdf_base64 = data.get('pdf_base64')
+    user_password = data.get('user_password')
+    owner_password = data.get('owner_password', user_password)
+    
+    if not pdf_base64 or not user_password:
+        return jsonify({
+            'success': False,
+            'error': 'PDF data and user password are required'
+        }), 400
+    
+    # Decode PDF
+    pdf_bytes = base64.b64decode(pdf_base64)
+    
+    # Open PDF with PyMuPDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    # Set encryption
+    perm = int(
+        fitz.PDF_PERM_ACCESSIBILITY |
+        fitz.PDF_PERM_PRINT |
+        fitz.PDF_PERM_COPY |
+        fitz.PDF_PERM_ANNOTATE
+    )
+    
+    # Encrypt the PDF with AES 256-bit
+    encrypt_meth = fitz.PDF_ENCRYPT_AES_256
+    
+    # Save with encryption
+    protected_bytes = doc.tobytes(
+        garbage=4,
+        deflate=True,
+        encryption=encrypt_meth,
+        owner_pw=owner_password,
+        user_pw=user_password,
+        permissions=perm
+    )
+    
+    doc.close()
+    
+    # Encode to base64
+    protected_base64 = base64.b64encode(protected_bytes).decode('utf-8')
+    
+    return jsonify({
+        'success': True,
+        'pdf_base64': protected_base64
+    })
+    
+except Exception as e:
+    print(f"Password protect error: {str(e)}")
+    return jsonify({
+        'success': False,
+        'error': str(e)
+    }), 500
+
