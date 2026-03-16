@@ -1488,119 +1488,120 @@ if __name__ == "__main__":
 
 @app.route('/pdf-to-html', methods=['POST'])
 def pdf_to_html():
-"""Convert PDF to HTML for editing"""
-try:
-    data = request.json
-    pdf_base64 = data.get('pdf_base64')
-    
-    if not pdf_base64:
-        return jsonify({'error': 'Missing pdf_base64'}), 400
-    
-    # Decode PDF
-    pdf_bytes = base64.b64decode(pdf_base64)
-    
-    # Open PDF with PyMuPDF
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    # Extract text from all pages with formatting
-    html_parts = ['<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">']
-    
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        
-        # Get text with formatting
-        blocks = page.get_text("dict")["blocks"]
-        
-        html_parts.append(f'<div style="page-break-after: always; padding: 40px 0;">')
-        
-        for block in blocks:
-            if block.get("type") == 0:  # Text block
-                for line in block.get("lines", []):
-                    line_html = '<p style="margin: 8px 0;">'
-                    for span in line.get("spans", []):
-                        text = span.get("text", "")
-                        font_size = span.get("size", 12)
-                        font_name = span.get("font", "Arial")
-                        color = span.get("color", 0)
-                        
-                        # Convert color from int to hex
-                        r = (color >> 16) & 0xFF
-                        g = (color >> 8) & 0xFF
-                        b = color & 0xFF
-                        color_hex = f"#{r:02x}{g:02x}{b:02x}"
-                        
-                        # Check if bold
-                        is_bold = "bold" in font_name.lower() or span.get("flags", 0) & 16
-                        
-                        style = f'font-size: {font_size}px; color: {color_hex};'
-                        if is_bold:
-                            style += ' font-weight: bold;'
-                        
-                        line_html += f'<span style="{style}">{text}</span>'
-                    
-                    line_html += '</p>'
-                    html_parts.append(line_html)
-        
+    """Convert PDF to HTML for editing"""
+    try:
+        data = request.json
+        pdf_base64 = data.get('pdf_base64')
+
+        if not pdf_base64:
+            return jsonify({'error': 'Missing pdf_base64'}), 400
+
+        # Decode PDF
+        pdf_bytes = base64.b64decode(pdf_base64)
+
+        # Open PDF with PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+        # Extract text from all pages with formatting
+        html_parts = ['<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">']
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+
+            # Get text with formatting
+            blocks = page.get_text("dict")["blocks"]
+
+            html_parts.append('<div style="page-break-after: always; padding: 40px 0;">')
+
+            for block in blocks:
+                if block.get("type") == 0:  # Text block
+                    for line in block.get("lines", []):
+                        line_html = '<p style="margin: 8px 0;">'
+
+                        for span in line.get("spans", []):
+                            text = span.get("text", "")
+                            font_size = span.get("size", 12)
+                            font_name = span.get("font", "Arial")
+                            color = span.get("color", 0)
+
+                            # Convert color from int to hex
+                            r = (color >> 16) & 0xFF
+                            g = (color >> 8) & 0xFF
+                            b = color & 0xFF
+                            color_hex = f"#{r:02x}{g:02x}{b:02x}"
+
+                            # Check if bold
+                            is_bold = "bold" in font_name.lower() or (span.get("flags", 0) & 16)
+
+                            style = f'font-size: {font_size}px; color: {color_hex};'
+                            if is_bold:
+                                style += ' font-weight: bold;'
+
+                            line_html += f'<span style="{style}">{text}</span>'
+
+                        line_html += '</p>'
+                        html_parts.append(line_html)
+
+            html_parts.append('</div>')
+
         html_parts.append('</div>')
-    
-    html_parts.append('</div>')
-    html_content = '\n'.join(html_parts)
-    
-    doc.close()
-    
-    return jsonify({
-        'html': html_content,
-        'success': True
-    })
-    
-except Exception as e:
-    print(f"Error converting PDF to HTML: {str(e)}")
-    return jsonify({'error': str(e)}), 500
+        html_content = '\n'.join(html_parts)
+
+        doc.close()
+
+        return jsonify({
+            'html': html_content,
+            'success': True
+        })
+
+    except Exception as e:
+        print(f"Error converting PDF to HTML: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/html-to-pdf', methods=['POST'])
 def html_to_pdf():
-"""Convert HTML to PDF"""
-try:
-    data = request.json
-    html_content = data.get('html_content')
-    
-    if not html_content:
-        return jsonify({'error': 'Missing html_content'}), 400
-    
-    # Create a new PDF document
-    doc = fitz.open()
-    
-    # Create page with standard letter size (612x792 points)
-    page = doc.new_page(width=612, height=792)
-    
-    # Strip HTML tags and extract plain text for now
-    # For a production system, you'd want a proper HTML renderer
-    import re
-    text = re.sub('<[^<]+?>', '', html_content)
-    text = text.replace('&nbsp;', ' ')
-    
-    # Insert text into PDF
-    rect = fitz.Rect(72, 72, 540, 720)  # 1 inch margins
-    page.insert_textbox(
-        rect,
-        text,
-        fontsize=12,
-        fontname="helv",
-        align=fitz.TEXT_ALIGN_LEFT
-    )
-    
-    # Convert to bytes
-    pdf_bytes = doc.tobytes()
-    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-    
-    doc.close()
-    
-    return jsonify({
-        'pdf_base64': pdf_base64,
-        'success': True
-    })
-    
-except Exception as e:
-    print(f"Error converting HTML to PDF: {str(e)}")
-    return jsonify({'error': str(e)}), 500
+    """Convert HTML to PDF"""
+    try:
+        data = request.json
+        html_content = data.get('html_content')
+
+        if not html_content:
+            return jsonify({'error': 'Missing html_content'}), 400
+
+        # Create a new PDF document
+        doc = fitz.open()
+
+        # Create page with standard letter size (612x792 points)
+        page = doc.new_page(width=612, height=792)
+
+        # Strip HTML tags and extract plain text for now
+        # For a production system, you'd want a proper HTML renderer
+        import re
+        text = re.sub('<[^<]+?>', '', html_content)
+        text = text.replace('&nbsp;', ' ')
+
+        # Insert text into PDF
+        rect = fitz.Rect(72, 72, 540, 720)  # 1 inch margins
+        page.insert_textbox(
+            rect,
+            text,
+            fontsize=12,
+            fontname="helv",
+            align=fitz.TEXT_ALIGN_LEFT
+        )
+
+        # Convert to bytes
+        pdf_bytes = doc.tobytes()
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        doc.close()
+
+        return jsonify({
+            'pdf_base64': pdf_base64,
+            'success': True
+        })
+
+    except Exception as e:
+        print(f"Error converting HTML to PDF: {str(e)}")
+        return jsonify({'error': str(e)}), 500
